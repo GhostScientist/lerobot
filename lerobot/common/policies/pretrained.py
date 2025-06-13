@@ -23,7 +23,7 @@ from huggingface_hub import hf_hub_download
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from huggingface_hub.errors import HfHubHTTPError
 from safetensors.torch import load_model as load_model_as_safetensor
-from safetensors.torch import save_model as save_model_as_safetensor
+from safetensors.torch import save_model as save_model_as_safetensor, save_file
 from torch import Tensor, nn
 
 from lerobot.common.utils.hub import HubMixin
@@ -71,7 +71,13 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
     def _save_pretrained(self, save_directory: Path) -> None:
         self.config._save_pretrained(save_directory)
         model_to_save = self.module if hasattr(self, "module") else self
-        save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
+        
+        # Create a clean state dict with CPU tensors to avoid safetensors storage issues
+        # in distributed training environments  
+        state_dict = {k: v.cpu().contiguous().clone() for k, v in model_to_save.state_dict().items()}
+        
+        # Use save_file instead of save_model to avoid model introspection issues
+        save_file(state_dict, str(save_directory / SAFETENSORS_SINGLE_FILE))
 
     @classmethod
     def from_pretrained(
