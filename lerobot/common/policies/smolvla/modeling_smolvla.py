@@ -359,7 +359,6 @@ class SmolVLAPolicy(PreTrainedPolicy):
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
 
-    # HACK(aliberts, danaaubakirova): we overwrite this classmethod here to fix smolVLA-specific issues
     @classmethod
     def _load_as_safetensor(
         cls,
@@ -368,13 +367,20 @@ class SmolVLAPolicy(PreTrainedPolicy):
         map_location: str,
         strict: bool,
     ):
-        safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
-        return load_smolvla(
-            model,
-            model_file,
-            device=map_location,
-            checkpoint_keys_mapping="model._orig_mod.//model.",
-        )
+        """
+        Fallback loader for safetensors failure:
+        Instead of using safetensors.torch.load_model(), load the state_dict manually
+        and apply it with torch.load for compatibility with multi-GPU setups.
+        """
+        import torch
+
+        # Load the model state dict from the safetensor or .pt file manually
+        state_dict = torch.load(model_file, map_location=map_location)
+
+        # Apply to the model
+        model.load_state_dict(state_dict, strict=strict)
+
+        return model
 
     def get_optim_params(self) -> dict:
         return self.parameters()
