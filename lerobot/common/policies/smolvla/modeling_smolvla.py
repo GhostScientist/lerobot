@@ -368,19 +368,55 @@ class SmolVLAPolicy(PreTrainedPolicy):
         strict: bool,
     ):
         """
-        Fallback loader for safetensors failure:
-        Instead of using safetensors.torch.load_model(), load the state_dict manually
-        and apply it with torch.load for compatibility with multi-GPU setups.
+        Custom loader for SmolVLA with multi-GPU support.
+        Handles DataParallel/DistributedDataParallel models and proper device placement.
         """
-        import torch
-
-        # Load the model state dict from the safetensor or .pt file manually
-        state_dict = torch.load(model_file, map_location=map_location)
-
-        # Apply to the model
-        model.load_state_dict(state_dict, strict=strict)
-
-        return model
+        # First, try to load using the standard safetensors approach
+        try:
+            safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+            return load_smolvla(
+                model,
+                model_file,
+                device=map_location,
+                checkpoint_keys_mapping="model._orig_mod.//model.",
+            )
+        except Exception as e:
+            # Fallback: Load state dict manually and handle multi-GPU scenarios
+            print(f"SafeTensors loading failed ({e}), trying manual state dict loading...")
+            
+            # Load state dict from file
+            try:
+                state_dict = safetensors.torch.load_file(model_file, device=map_location)
+            except Exception:
+                # Final fallback to torch.load for .pt files
+                state_dict = torch.load(model_file, map_location=map_location)
+            
+            # Handle multi-GPU model wrapping (DataParallel/DistributedDataParallel)
+            if hasattr(model, 'module'):
+                # Model is wrapped with DataParallel or DistributedDataParallel
+                target_model = model.module
+            else:
+                target_model = model
+            
+            # Apply checkpoint key mapping if needed
+            checkpoint_keys_mapping = "model._orig_mod.//model."
+            if checkpoint_keys_mapping and "//" in checkpoint_keys_mapping:
+                state_dict = rename_checkpoint_keys(state_dict, checkpoint_keys_mapping)
+            
+            # Standardize the state dict keys to match the model
+            state_dict, _ = standardise_state_dict(state_dict, set(target_model.state_dict().keys()))
+            
+            # Load the state dict into the target model
+            missing, unexpected = target_model.load_state_dict(state_dict, strict=strict)
+            
+            if missing or unexpected:
+                print(f"Warning: {len(missing)} missing keys, {len(unexpected)} unexpected keys")
+                if strict:
+                    raise RuntimeError(
+                        f"SmolVLA loading failed: {len(missing)} missing / {len(unexpected)} unexpected keys"
+                    )
+            
+            return model
 
     def get_optim_params(self) -> dict:
         return self.parameters()
