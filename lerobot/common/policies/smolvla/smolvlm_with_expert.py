@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import os
 from typing import List, Optional
 
 import torch
@@ -73,14 +74,31 @@ class SmolVLMWithExpertModel(nn.Module):
         expert_width_multiplier: float = 0.5,
     ):
         super().__init__()
+        
+        # Detect if we're in distributed training environment
+        is_distributed = (
+            os.environ.get("RANK") is not None or 
+            os.environ.get("LOCAL_RANK") is not None or
+            os.environ.get("WORLD_SIZE") is not None
+        )
+        
         if load_vlm_weights:
             print(f"Loading  {model_id} weights ...")
-            self.vlm = AutoModelForImageTextToText.from_pretrained(
-                model_id,
-                device_map="auto",
-                torch_dtype="bfloat16",
-                low_cpu_mem_usage=True,
-            )
+            
+            # In distributed training, don't use device_map="auto" to avoid conflicts
+            if is_distributed:
+                self.vlm = AutoModelForImageTextToText.from_pretrained(
+                    model_id,
+                    torch_dtype="bfloat16",
+                    low_cpu_mem_usage=True,
+                )
+            else:
+                self.vlm = AutoModelForImageTextToText.from_pretrained(
+                    model_id,
+                    device_map="auto",
+                    torch_dtype="bfloat16",
+                    low_cpu_mem_usage=True,
+                )
             config = self.vlm.config
         else:
             config = AutoConfig.from_pretrained(model_id)
